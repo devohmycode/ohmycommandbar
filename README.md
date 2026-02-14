@@ -1,4 +1,4 @@
-# OhMyRay
+# OhMyCommandBar
 
 A Raycast-inspired productivity launcher for Windows, built with Tauri 2 + Next.js + React 19.
 

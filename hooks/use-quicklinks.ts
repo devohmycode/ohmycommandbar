@@ -11,7 +11,7 @@ export interface Quicklink {
   pinned?: boolean;
 }
 
-const STORAGE_KEY = "ohmyray-quicklinks";
+const STORAGE_KEY = "ohmycommandbar-quicklinks";
 
 function loadQuicklinks(): Quicklink[] {
   if (typeof window === "undefined") return [];

@@ -12,7 +12,7 @@ export interface Snippet {
   pinned?: boolean;
 }
 
-const STORAGE_KEY = "ohmyray-snippets";
+const STORAGE_KEY = "ohmycommandbar-snippets";
 
 function loadSnippets(): Snippet[] {
   if (typeof window === "undefined") return [];

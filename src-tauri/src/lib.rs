@@ -127,7 +127,7 @@ pub fn run() {
             // Tray icon
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("OhMyRay")
+                .tooltip("OhMyCommandBar")
                 .on_tray_icon_event(|tray, event| {
                     if let tauri::tray::TrayIconEvent::Click { .. } = event {
                         let window = tray.app_handle().get_webview_window("main").unwrap();
