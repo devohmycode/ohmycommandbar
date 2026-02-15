@@ -4,6 +4,14 @@ A Raycast-inspired productivity launcher for Windows, built with Tauri 2 + Next.
 
 Summon a floating command bar with a global shortcut, search your snippets and quicklinks, and get things done without leaving the keyboard.
 
+## Release notes
+
+- 0.1.0 : Initial commit
+- 0.1.1 : 
+    - Add Windows system execution commands
+    - Add a URL link saving system
+    - Add theme options in settings
+
 ## Features
 
 - **Command Bar** — Global shortcut (`Ctrl+K` by default) to summon/dismiss a floating, transparent overlay
