@@ -5,6 +5,9 @@ import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { X, Keyboard, Pin } from 'lucide-react'
 
+// Check if running in Tauri environment (v2 uses __TAURI_INTERNALS__)
+const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
 interface ShortcutConfig {
   modifiers: string[]
   key: string
@@ -38,22 +41,49 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
     return localStorage.getItem('always-on-top') === 'true'
   })
 
+  const [backdropEffect, setBackdropEffect] = useState<'none' | 'acrylic' | 'mica'>(() => {
+    if (typeof window === 'undefined') return 'none'
+    return (localStorage.getItem('backdrop-effect') as 'none' | 'acrylic' | 'mica') ?? 'none'
+  })
+
   const [capturing, setCapturing] = useState(false)
   const captureRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
-    getCurrentWindow().setAlwaysOnTop(alwaysOnTop).catch(() => {})
+    if (isTauri()) {
+      getCurrentWindow().setAlwaysOnTop(alwaysOnTop).catch(() => {})
+    }
     localStorage.setItem('always-on-top', String(alwaysOnTop))
   }, [alwaysOnTop])
 
   useEffect(() => {
     const alpha = opacity / 100
-    document.documentElement.style.setProperty(
-      '--glass-bg',
-      `rgba(10, 10, 14, ${alpha})`
-    )
+    const bg = `rgba(10, 10, 14, ${alpha})`
+    document.documentElement.style.setProperty('--glass-bg', bg)
+    // Directly update glass panels for immediate visual feedback
+    // (CSS variable changes may not trigger repaint on backdrop-filter elements in WebView2)
+    document.querySelectorAll<HTMLElement>('.glass-panel-strong, .glass-panel').forEach((el) => {
+      el.style.background = bg
+    })
     localStorage.setItem('glass-opacity', String(opacity))
   }, [opacity])
+
+  useEffect(() => {
+    if (isTauri()) {
+      if (backdropEffect === 'none') {
+        getCurrentWindow().clearEffects().catch(() => {})
+      } else {
+        getCurrentWindow().setEffects({ effects: [backdropEffect] }).catch(() => {})
+      }
+    }
+    // Toggle class so CSS backdrop-filter is disabled when OS effect is active
+    if (backdropEffect === 'none') {
+      document.documentElement.classList.remove('os-backdrop-active')
+    } else {
+      document.documentElement.classList.add('os-backdrop-active')
+    }
+    localStorage.setItem('backdrop-effect', backdropEffect)
+  }, [backdropEffect])
 
   useEffect(() => {
     if (capturing && captureRef.current) captureRef.current.focus()
@@ -74,13 +104,15 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
       if (mods.length === 0) return
       const key = e.key.toUpperCase()
       setCapturing(false)
-      invoke('change_shortcut', { modifiers: mods, key })
-        .then(() => {
-          const config: ShortcutConfig = { modifiers: mods, key }
-          setShortcut(config)
-          localStorage.setItem('shortcut', JSON.stringify(config))
-        })
-        .catch(console.error)
+      if (isTauri()) {
+        invoke('change_shortcut', { modifiers: mods, key })
+          .then(() => {
+            const config: ShortcutConfig = { modifiers: mods, key }
+            setShortcut(config)
+            localStorage.setItem('shortcut', JSON.stringify(config))
+          })
+          .catch(console.error)
+      }
     },
     [capturing]
   )
@@ -132,6 +164,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             max={100}
             value={opacity}
             onChange={(e) => setOpacity(Number(e.target.value))}
+            onKeyDown={(e) => e.stopPropagation()}
             className="glass-slider w-full"
           />
           <div
@@ -153,6 +186,28 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               <span className="text-[10px] text-white/25">Preview</span>
             </div>
           </div>
+        </div>
+
+        {/* Backdrop effect */}
+        <div className="mt-5 space-y-2">
+          <span className="text-[11px] text-white/50">Backdrop effect</span>
+          <div className="flex gap-1.5">
+            {(['none', 'acrylic', 'mica'] as const).map((effect) => (
+              <button
+                key={effect}
+                type="button"
+                onClick={() => setBackdropEffect(effect)}
+                className={`flex-1 rounded-lg border px-3 py-2 text-[11px] font-medium transition-all duration-200 cursor-pointer ${
+                  backdropEffect === effect
+                    ? 'bg-[var(--accent-coral-dim)] border-[var(--accent-coral-border)] text-[var(--accent-coral)]'
+                    : 'border-white/[0.06] bg-white/[0.03] text-white/40 hover:text-white/70 hover:bg-white/[0.06]'
+                }`}
+              >
+                {effect.charAt(0).toUpperCase() + effect.slice(1)}
+              </button>
+            ))}
+          </div>
+          <p className="text-[10px] text-white/20">Mica requires Windows 11</p>
         </div>
       </div>
 

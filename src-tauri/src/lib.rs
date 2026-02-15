@@ -1,12 +1,27 @@
+mod clipboard_history;
+mod installed_apps;
 mod text_expansion;
 
+use clipboard_history::entry::ClipboardEntry;
+use clipboard_history::ClipboardHistoryState;
+use installed_apps::InstalledApp;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tauri::{tray::TrayIconBuilder, Emitter, LogicalSize, Manager};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use text_expansion::TriggerMap;
 
 struct CurrentShortcut(Arc<RwLock<Shortcut>>);
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct UserPreferences {
+    blur_radius: Option<f64>,
+    glass_opacity: Option<f64>,
+    always_on_top: Option<bool>,
+}
 
 fn toggle_window(handle: &tauri::AppHandle) {
     if let Some(window) = handle.get_webview_window("main") {
@@ -54,6 +69,39 @@ fn parse_key(key: &str) -> Option<Code> {
         "9" => Code::Digit9,
         _ => return None,
     })
+}
+
+fn get_prefs_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    Ok(app_data_dir.join("preferences.json"))
+}
+
+fn load_preferences(app_handle: &tauri::AppHandle) -> UserPreferences {
+    match get_prefs_path(app_handle) {
+        Ok(path) => {
+            if let Ok(content) = fs::read_to_string(&path) {
+                if let Ok(prefs) = serde_json::from_str(&content) {
+                    return prefs;
+                }
+            }
+        }
+        Err(e) => log::error!("Failed to get preferences path: {}", e),
+    }
+    UserPreferences {
+        blur_radius: Some(8.0),
+        glass_opacity: Some(82.0),
+        always_on_top: Some(false),
+    }
+}
+
+fn save_preferences(app_handle: &tauri::AppHandle, prefs: &UserPreferences) -> Result<(), String> {
+    let path = get_prefs_path(app_handle)?;
+    let content = serde_json::to_string_pretty(prefs).map_err(|e| e.to_string())?;
+    fs::write(&path, content).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -119,10 +167,95 @@ fn change_shortcut(
     Ok(())
 }
 
+// ── Clipboard History Commands ──────────────────────────────────────────
+
+#[tauri::command]
+fn get_clipboard_history(
+    state: tauri::State<'_, ClipboardHistoryState>,
+) -> Result<Vec<ClipboardEntry>, String> {
+    let entries = state.0.read().map_err(|e| e.to_string())?;
+    Ok(entries.clone())
+}
+
+#[tauri::command]
+fn delete_clipboard_entry(
+    state: tauri::State<'_, ClipboardHistoryState>,
+    app_handle: tauri::AppHandle,
+    id: String,
+) -> Result<(), String> {
+    let mut entries = state.0.write().map_err(|e| e.to_string())?;
+    entries.retain(|e| e.id != id);
+    if let Some(dir) = app_handle.path().app_data_dir().ok() {
+        clipboard_history::storage::save(&dir, &entries);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn clear_clipboard_history(
+    state: tauri::State<'_, ClipboardHistoryState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let mut entries = state.0.write().map_err(|e| e.to_string())?;
+    entries.clear();
+    if let Some(dir) = app_handle.path().app_data_dir().ok() {
+        clipboard_history::storage::save(&dir, &entries);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn toggle_clipboard_pin(
+    state: tauri::State<'_, ClipboardHistoryState>,
+    app_handle: tauri::AppHandle,
+    id: String,
+) -> Result<(), String> {
+    let mut entries = state.0.write().map_err(|e| e.to_string())?;
+    if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+        entry.pinned = !entry.pinned;
+    }
+    if let Some(dir) = app_handle.path().app_data_dir().ok() {
+        clipboard_history::storage::save(&dir, &entries);
+    }
+    Ok(())
+}
+
+// ── Installed Applications Commands ─────────────────────────────────────
+
+#[tauri::command]
+fn get_installed_apps() -> Result<Vec<InstalledApp>, String> {
+    Ok(installed_apps::list_installed_apps())
+}
+
+#[tauri::command]
+fn launch_installed_app(app_handle: tauri::AppHandle, path: String) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("Missing application path".into());
+    }
+    if let Some(window) = app_handle.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    open::that(&path).map_err(|e| e.to_string())
+}
+
+// ── App Entry Point ─────────────────────────────────────────────────────
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![sync_triggers, change_shortcut, paste_snippet, open_link])
+        .invoke_handler(tauri::generate_handler![
+            sync_triggers,
+            change_shortcut,
+            paste_snippet,
+            open_link,
+            get_clipboard_history,
+            delete_clipboard_entry,
+            clear_clipboard_history,
+            toggle_clipboard_pin,
+
+            get_installed_apps,
+            launch_installed_app,
+        ])
         .setup(move |app| {
             // Tray icon
             let _tray = TrayIconBuilder::new()
@@ -161,6 +294,17 @@ pub fn run() {
 
             // Text expansion listener
             text_expansion::listener::start_listener(Arc::clone(&trigger_arc));
+
+            // Clipboard history
+            let app_data_dir = app.path().app_data_dir().expect("Failed to get app data dir");
+            let history = clipboard_history::storage::load(&app_data_dir);
+            let history_arc = Arc::new(RwLock::new(history));
+            app.manage(ClipboardHistoryState(Arc::clone(&history_arc)));
+            clipboard_history::monitor::start_monitor(
+                app.handle().clone(),
+                Arc::clone(&history_arc),
+                app_data_dir,
+            );
 
             if cfg!(debug_assertions) {
                 app.handle().plugin(

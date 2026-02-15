@@ -4,7 +4,7 @@ import React, { useState, useMemo, useCallback, useEffect, useRef } from "react"
 import {
   Search, ChevronRight, ChevronUp, ChevronDown, FileText, Zap,
   Hash, Copy, Check, Star, Plus, Pencil, Settings, Pin, ClipboardPaste,
-  Link, ExternalLink,
+  Link, ExternalLink, Clipboard, ArrowLeft,
 } from "lucide-react";
 import { SettingsPanel } from "@/components/settings-menu";
 import { SnippetForm } from "@/components/snippet-form";
@@ -12,11 +12,19 @@ import { QuicklinkForm } from "@/components/quicklink-form";
 import { ICON_MAP } from "@/components/icon-picker";
 import { useSnippets, type Snippet } from "@/hooks/use-snippets";
 import { useQuicklinks, type Quicklink } from "@/hooks/use-quicklinks";
+import { useClipboardHistory, type ClipboardEntry } from "@/hooks/use-clipboard-history";
+import { useInstalledApps, type InstalledApp } from "@/hooks/use-installed-apps";
+import { ClipboardDetailPanel, getClipboardIcon } from "@/components/clipboard-detail-panel";
 import { resolvePlaceholders, previewPlaceholders } from "@/lib/resolve-placeholders";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+
+/* ───────────────── Helpers ───────────────── */
+
+// Check if running in Tauri environment (v2 uses __TAURI_INTERNALS__)
+const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 /* ───────────────── Types ───────────────── */
 
@@ -29,14 +37,17 @@ interface CommandItem {
   keywords?: string[];
   body?: string;
   link?: string;
+  launchPath?: string;
   tags?: string[];
   pinned?: boolean;
-  itemType?: "snippet" | "quicklink";
+  itemType?: "snippet" | "quicklink" | "clipboard" | "installedApp";
+  clipboardEntry?: ClipboardEntry;
   action?: () => void;
 }
 
 const ACTION_CREATE_ID = "__action_create__";
 const ACTION_CREATE_QUICKLINK_ID = "__action_create_quicklink__";
+const SUBMENU_CLIPBOARD_ID = "__submenu_clipboard__";
 
 /* ───────────────── Tag Badge ───────────────── */
 
@@ -220,6 +231,63 @@ function quicklinkToItem(quicklink: Quicklink): CommandItem {
   };
 }
 
+function clipboardEntryToItem(entry: ClipboardEntry): CommandItem {
+  const Icon = getClipboardIcon(entry.contentType);
+  const label = entry.preview.split("\n")[0].slice(0, 60) || "Empty";
+  return {
+    id: `clip-${entry.id}`,
+    label,
+    subtitle: `${entry.sourceApp} · ${entry.contentType}`,
+    icon: Icon,
+    category: entry.pinned ? "Pinned" : "Clipboard",
+    keywords: [entry.contentType, entry.sourceApp, "clipboard"],
+    body: entry.content,
+    pinned: entry.pinned,
+    itemType: "clipboard",
+    clipboardEntry: entry,
+  };
+}
+
+function installedAppToItem(app: InstalledApp): CommandItem {
+  const location = app.location?.trim();
+  const sourceLabel = (() => {
+    switch (app.source) {
+      case "user":
+        return "User Start Menu";
+      case "system":
+        return "System Start Menu";
+      case "registry-app-paths-user":
+        return "Registry (App Paths - User)";
+      case "registry-app-paths-system":
+        return "Registry (App Paths - System)";
+      case "registry-uninstall-user":
+        return "Registry (Uninstall - User)";
+      case "registry-uninstall-system":
+      case "registry-uninstall-system-wow6432":
+        return "Registry (Uninstall - System)";
+      default:
+        return "Installed App";
+    }
+  })();
+
+  return {
+    id: app.id,
+    label: app.name,
+    subtitle: location ? `${location} · ${sourceLabel}` : sourceLabel,
+    icon: Star,
+    category: "Applications",
+    keywords: [
+      "application",
+      "app",
+      sourceLabel.toLowerCase(),
+      location?.toLowerCase() ?? "",
+      app.launch_path.toLowerCase(),
+    ],
+    launchPath: app.launch_path,
+    itemType: "installedApp",
+  };
+}
+
 /* ───────────────── Main Command Bar ───────────────── */
 
 export function CommandBar() {
@@ -228,6 +296,8 @@ export function CommandBar() {
 
   const { snippets, addSnippet, updateSnippet, deleteSnippet, togglePin: toggleSnippetPin, duplicateSnippet } = useSnippets();
   const { quicklinks, addQuicklink, updateQuicklink, deleteQuicklink, togglePin: toggleQuicklinkPin, duplicateQuicklink } = useQuicklinks();
+  const { entries: clipboardEntries, deleteEntry: deleteClipboardEntry, togglePin: toggleClipboardPin, pasteEntry: pasteClipboardEntry } = useClipboardHistory();
+  const { apps: installedApps, launchApp } = useInstalledApps();
 
   const [isCreating, setIsCreating] = useState(false);
   const [isCreatingQuicklink, setIsCreatingQuicklink] = useState(false);
@@ -237,6 +307,7 @@ export function CommandBar() {
   const [collapsed, setCollapsed] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
+  const [activeSubmenu, setActiveSubmenu] = useState<"clipboard" | null>(null);
 
   const refocusSearch = useCallback(() => {
     requestAnimationFrame(() => searchRef.current?.focus());
@@ -246,38 +317,53 @@ export function CommandBar() {
     const savedOpacity = localStorage.getItem("glass-opacity");
     if (savedOpacity) {
       const alpha = Number(savedOpacity) / 100;
-      document.documentElement.style.setProperty(
-        "--glass-bg",
-        `rgba(10, 10, 14, ${alpha})`
-      );
+      const bg = `rgba(10, 10, 14, ${alpha})`;
+      document.documentElement.style.setProperty("--glass-bg", bg);
+      document.querySelectorAll<HTMLElement>('.glass-panel-strong, .glass-panel').forEach((el) => {
+        el.style.background = bg;
+      });
     }
     const savedShortcut = localStorage.getItem("shortcut");
-    if (savedShortcut) {
+    if (savedShortcut && isTauri()) {
       try {
         const { modifiers, key } = JSON.parse(savedShortcut);
         invoke("change_shortcut", { modifiers, key }).catch(() => {});
       } catch {}
     }
     if (localStorage.getItem("always-on-top") === "true") {
-      getCurrentWindow().setAlwaysOnTop(true).catch(() => {});
+      if (isTauri()) {
+        getCurrentWindow().setAlwaysOnTop(true).catch(() => {});
+      }
+    }
+    const savedEffect = localStorage.getItem("backdrop-effect");
+    if (savedEffect && savedEffect !== "none") {
+      document.documentElement.classList.add("os-backdrop-active");
+      if (isTauri()) {
+        getCurrentWindow().setEffects({ effects: [savedEffect] }).catch(() => {});
+      }
     }
   }, []);
 
   useEffect(() => {
-    const appWindow = getCurrentWindow();
-    if (collapsed) {
-      appWindow.setSize(new LogicalSize(750, 44));
-    } else {
-      appWindow.setSize(new LogicalSize(750, 500));
+    // Check if running in Tauri environment
+    if (isTauri()) {
+      const appWindow = getCurrentWindow();
+      if (collapsed) {
+        appWindow.setSize(new LogicalSize(750, 44));
+      } else {
+        appWindow.setSize(new LogicalSize(750, 500));
+      }
     }
   }, [collapsed]);
 
   useEffect(() => {
-    const unlisten = listen("window-expanded", () => {
-      setCollapsed(false);
-      refocusSearch();
-    });
-    return () => { unlisten.then((fn) => fn()); };
+    if (isTauri()) {
+      const unlisten = listen("window-expanded", () => {
+        setCollapsed(false);
+        refocusSearch();
+      });
+      return () => { unlisten.then((fn) => fn()); };
+    }
   }, [refocusSearch]);
 
   const sortedSnippets = useMemo(() => {
@@ -296,10 +382,43 @@ export function CommandBar() {
     });
   }, [quicklinks]);
 
-  const items = useMemo(() => [
-    ...sortedSnippets.map(snippetToItem),
-    ...sortedQuicklinks.map(quicklinkToItem),
-  ], [sortedSnippets, sortedQuicklinks]);
+  const clipboardItems = useMemo(() => {
+    return [...clipboardEntries].sort((a, b) => {
+      if (a.pinned && !b.pinned) return -1;
+      if (!a.pinned && b.pinned) return 1;
+      return 0;
+    });
+  }, [clipboardEntries]);
+
+  const sortedInstalledApps = useMemo(() => {
+    return [...installedApps].sort((a, b) => a.name.localeCompare(b.name));
+  }, [installedApps]);
+
+  const installedAppItems = useMemo(() => {
+    if (!query.trim()) return [];
+    return sortedInstalledApps.map(installedAppToItem);
+  }, [query, sortedInstalledApps]);
+
+  const clipboardSubmenuItem: CommandItem = useMemo(() => ({
+    id: SUBMENU_CLIPBOARD_ID,
+    label: "Clipboard History",
+    subtitle: `${clipboardEntries.length} item${clipboardEntries.length !== 1 ? "s" : ""}`,
+    icon: Clipboard,
+    category: "Clipboard",
+    keywords: ["clipboard", "history", "paste", "copy"],
+  }), [clipboardEntries.length]);
+
+  const items = useMemo(() => {
+    if (activeSubmenu === "clipboard") {
+      return clipboardItems.map(clipboardEntryToItem);
+    }
+    return [
+      ...sortedSnippets.map(snippetToItem),
+      ...sortedQuicklinks.map(quicklinkToItem),
+      clipboardSubmenuItem,
+      ...installedAppItems,
+    ];
+  }, [activeSubmenu, sortedSnippets, sortedQuicklinks, clipboardItems, clipboardSubmenuItem, installedAppItems]);
 
   const filtered = useMemo(() => {
     if (!query.trim()) return items;
@@ -360,10 +479,12 @@ export function CommandBar() {
     for (const [key, value] of Object.entries(groups)) {
       if (key !== "Pinned") ordered[key] = value;
     }
-    // Always append the create actions
-    ordered["Actions"] = [createActionItem, createQuicklinkActionItem];
+    // Append create actions only in main menu
+    if (!activeSubmenu) {
+      ordered["Actions"] = [createActionItem, createQuicklinkActionItem];
+    }
     return ordered;
-  }, [filtered, createActionItem, createQuicklinkActionItem]);
+  }, [filtered, createActionItem, createQuicklinkActionItem, activeSubmenu]);
 
   const flatList = useMemo(() => {
     const list: CommandItem[] = [];
@@ -385,17 +506,24 @@ export function CommandBar() {
   }, []);
 
   const pasteSnippet = useCallback(async (body: string) => {
+    if (!isTauri()) return;
     try {
       await invoke("paste_snippet", { body });
     } catch {}
   }, []);
 
   const openLink = useCallback(async (link: string) => {
+    if (!isTauri()) return;
     try {
       const resolved = await resolvePlaceholders(link);
       await invoke("open_link", { url: resolved });
     } catch {}
   }, []);
+
+  const launchInstalledApp = useCallback(async (path: string) => {
+    if (!isTauri()) return;
+    await launchApp(path);
+  }, [launchApp]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     const showForm = isCreating || isCreatingQuicklink || editingSnippet !== null || editingQuicklink !== null;
@@ -403,8 +531,9 @@ export function CommandBar() {
       e.preventDefault();
       if (showSettings) {
         setShowSettings(false);
+      } else if (activeSubmenu) {
+        setActiveSubmenu(null);
       }
-      // Always refocus search and clear query
       setQuery("");
       setSelectedIndex(0);
       refocusSearch();
@@ -416,12 +545,20 @@ export function CommandBar() {
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setSelectedIndex((prev) => Math.max(prev - 1, 0));
+    } else if (e.key === "Enter" && !showForm && selectedItem?.id === SUBMENU_CLIPBOARD_ID) {
+      e.preventDefault();
+      setActiveSubmenu("clipboard");
+      setQuery("");
+      setSelectedIndex(0);
     } else if (e.key === "Enter" && !showForm && selectedItem?.action) {
       e.preventDefault();
       selectedItem.action();
     } else if (e.key === "Enter" && e.ctrlKey && !showForm && selectedItem?.body) {
       e.preventDefault();
       pasteSnippet(selectedItem.body);
+    } else if (e.key === "Enter" && !e.ctrlKey && !showForm && selectedItem?.itemType === "installedApp" && selectedItem.launchPath) {
+      e.preventDefault();
+      launchInstalledApp(selectedItem.launchPath);
     } else if (e.key === "Enter" && !e.ctrlKey && !showForm && selectedItem?.link) {
       e.preventDefault();
       openLink(selectedItem.link);
@@ -431,17 +568,26 @@ export function CommandBar() {
     } else if (e.key === "c" && e.ctrlKey && !showForm && selectedItem?.link) {
       e.preventDefault();
       copyToClipboard(selectedItem.link);
-    } else if (e.key === "e" && e.ctrlKey && !showForm && selectedItem) {
+    } else if (e.key === "c" && e.ctrlKey && !showForm && selectedItem?.itemType === "installedApp" && selectedItem.launchPath) {
       e.preventDefault();
-      startEdit();
+      copyToClipboard(selectedItem.launchPath);
+    } else if (e.key === "e" && e.ctrlKey && !showForm && selectedItem) {
+      if (selectedItem.itemType === "snippet" || selectedItem.itemType === "quicklink") {
+        e.preventDefault();
+        startEdit();
+      }
     } else if (e.key === "d" && e.ctrlKey && !showForm && selectedItem) {
       e.preventDefault();
-      if (selectedItem.itemType === "quicklink") duplicateQuicklink(selectedItem.id);
-      else duplicateSnippet(selectedItem.id);
+      if (selectedItem.itemType === "clipboard" && selectedItem.clipboardEntry) {
+        deleteClipboardEntry(selectedItem.clipboardEntry.id);
+      } else if (selectedItem.itemType === "quicklink") duplicateQuicklink(selectedItem.id);
+      else if (selectedItem.itemType === "snippet") duplicateSnippet(selectedItem.id);
     } else if (e.key === "p" && e.ctrlKey && !showForm && selectedItem) {
       e.preventDefault();
-      if (selectedItem.itemType === "quicklink") toggleQuicklinkPin(selectedItem.id);
-      else toggleSnippetPin(selectedItem.id);
+      if (selectedItem.itemType === "clipboard" && selectedItem.clipboardEntry) {
+        toggleClipboardPin(selectedItem.clipboardEntry.id);
+      } else if (selectedItem.itemType === "quicklink") toggleQuicklinkPin(selectedItem.id);
+      else if (selectedItem.itemType === "snippet") toggleSnippetPin(selectedItem.id);
     } else if (e.key === "n" && e.ctrlKey && !showForm) {
       e.preventDefault();
       openCreateForm();
@@ -455,6 +601,8 @@ export function CommandBar() {
     Pinned: <Pin className="h-3 w-3" />,
     Snippets: <Zap className="h-3 w-3" />,
     Quicklinks: <Link className="h-3 w-3" />,
+    Clipboard: <Clipboard className="h-3 w-3" />,
+    Applications: <Star className="h-3 w-3" />,
     Actions: <Plus className="h-3 w-3" />,
     Scenarios: <Zap className="h-3 w-3" />,
     Policies: <Hash className="h-3 w-3" />,
@@ -512,7 +660,7 @@ export function CommandBar() {
           type="text"
           value={query}
           onChange={(e) => { setQuery(e.target.value); setSelectedIndex(0); }}
-          placeholder="Search snippets & quicklinks..."
+          placeholder={activeSubmenu === "clipboard" ? "Search clipboard history..." : "Search snippets, quicklinks, clipboard & apps..."}
           className="flex-1 bg-transparent text-[13px] font-light text-white/90 placeholder-white/25 outline-none tracking-wide"
           autoFocus
         />
@@ -552,6 +700,17 @@ export function CommandBar() {
         <div className="flex flex-1 min-h-0 animate-fade-in">
           {/* Left: Results */}
           <div className="w-[340px] flex-shrink-0 overflow-y-auto glass-scrollbar border-r border-white/[0.04]">
+            {activeSubmenu && (
+              <button
+                type="button"
+                onClick={() => { setActiveSubmenu(null); setQuery(""); setSelectedIndex(0); }}
+                className="flex items-center gap-2 px-4 py-2.5 w-full text-left border-b border-white/[0.04] hover:bg-white/[0.03] transition-colors"
+              >
+                <ArrowLeft className="h-3 w-3 text-white/30" />
+                <span className="text-[11px] text-white/40">Back</span>
+                <span className="text-[11px] text-white/60 font-medium ml-1">Clipboard History</span>
+              </button>
+            )}
             {Object.keys(grouped).length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full gap-3 px-8 text-center">
                 <div className="h-10 w-10 rounded-xl bg-white/[0.03] flex items-center justify-center">
@@ -559,10 +718,14 @@ export function CommandBar() {
                 </div>
                 <div className="space-y-1">
                   <p className="text-[12px] font-medium text-white/40">
-                    {items.length === 0 ? "No snippets yet" : "No results"}
+                    {items.length === 0
+                      ? (activeSubmenu === "clipboard" ? "No clipboard history" : "No snippets yet")
+                      : "No results"}
                   </p>
                   <p className="text-[10px] text-white/20">
-                    {items.length === 0 ? "Press Ctrl+N to create one" : "Try a different query"}
+                    {items.length === 0
+                      ? (activeSubmenu === "clipboard" ? "Copied items will appear here" : "Press Ctrl+N to create one")
+                      : "Try a different query"}
                   </p>
                 </div>
               </div>
@@ -586,6 +749,7 @@ export function CommandBar() {
                         type="button"
                         onClick={() => {
                           setSelectedIndex(globalIdx);
+                          if (item.id === SUBMENU_CLIPBOARD_ID) { setActiveSubmenu("clipboard"); setQuery(""); setSelectedIndex(0); return; }
                           if (item.action) { item.action(); return; }
                           closeForm(); setShowSettings(false);
                         }}
@@ -593,10 +757,12 @@ export function CommandBar() {
                           if (item.action) return;
                           setSelectedIndex(globalIdx);
                           setShowSettings(false);
-                          if (item.itemType === "quicklink") {
+                          if (item.itemType === "installedApp" && item.launchPath) {
+                            launchInstalledApp(item.launchPath);
+                          } else if (item.itemType === "quicklink") {
                             const ql = quicklinks.find((q) => q.id === item.id);
                             if (ql) { setEditingQuicklink(ql); setIsCreating(false); setIsCreatingQuicklink(false); setEditingSnippet(null); }
-                          } else {
+                          } else if (item.itemType === "snippet") {
                             const snippet = snippets.find((s) => s.id === item.id);
                             if (snippet) { setEditingSnippet(snippet); setIsCreating(false); setIsCreatingQuicklink(false); setEditingQuicklink(null); }
                           }
@@ -674,6 +840,19 @@ export function CommandBar() {
                   onDelete={handleDeleteQuicklink}
                 />
               ) : null
+            ) : selectedItem?.id === SUBMENU_CLIPBOARD_ID ? (
+              <div className="flex h-full flex-col items-center justify-center gap-4 px-8 text-center animate-slide-right">
+                <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white/[0.04] border border-white/[0.06]">
+                  <Clipboard className="h-6 w-6 text-white/50" />
+                </div>
+                <div className="space-y-1">
+                  <p className="text-[13px] font-semibold text-white/90 tracking-tight">Clipboard History</p>
+                  <p className="text-[11px] text-white/30">{clipboardEntries.length} item{clipboardEntries.length !== 1 ? "s" : ""} saved</p>
+                </div>
+                <p className="text-[10px] text-white/20 tracking-wide">
+                  Press <span className="text-white/30">Enter</span> to browse
+                </p>
+              </div>
             ) : selectedItem?.action ? (
               <div className="flex h-full flex-col items-center justify-center gap-4 px-8 text-center animate-slide-right">
                 <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--accent-coral-dim)] border border-[var(--accent-coral-border)]">
@@ -699,6 +878,22 @@ export function CommandBar() {
                 onOpen={() => selectedItem.link && openLink(selectedItem.link)}
                 onCopy={() => selectedItem.link && copyToClipboard(selectedItem.link)}
                 onPin={() => toggleQuicklinkPin(selectedItem.id)}
+                copied={copied}
+              />
+            ) : selectedItem?.itemType === "installedApp" ? (
+              <InstalledAppDetailPanel
+                item={selectedItem}
+                onOpen={() => selectedItem.launchPath && launchInstalledApp(selectedItem.launchPath)}
+                onCopyPath={() => selectedItem.launchPath && copyToClipboard(selectedItem.launchPath)}
+                copied={copied}
+              />
+            ) : selectedItem?.itemType === "clipboard" && selectedItem.clipboardEntry ? (
+              <ClipboardDetailPanel
+                entry={selectedItem.clipboardEntry}
+                onCopy={() => selectedItem.body && copyToClipboard(selectedItem.body)}
+                onPaste={() => selectedItem.body && pasteClipboardEntry(selectedItem.body)}
+                onPin={() => selectedItem.clipboardEntry && toggleClipboardPin(selectedItem.clipboardEntry.id)}
+                onDelete={() => selectedItem.clipboardEntry && deleteClipboardEntry(selectedItem.clipboardEntry.id)}
                 copied={copied}
               />
             ) : selectedItem ? (
@@ -730,12 +925,31 @@ export function CommandBar() {
               </>
             ) : showSettings ? (
               <FooterShortcut keys={["Esc"]} label="Close" />
+            ) : selectedItem?.id === SUBMENU_CLIPBOARD_ID ? (
+              <>
+                <FooterShortcut keys={["↵"]} label="Open" />
+                <FooterShortcut keys={["Esc"]} label="Reset" />
+              </>
+            ) : selectedItem?.itemType === "clipboard" ? (
+              <>
+                <FooterShortcut keys={["↵"]} label="Copy" />
+                <FooterShortcut keys={["Ctrl", "↵"]} label="Paste" />
+                <FooterShortcut keys={["Ctrl", "P"]} label="Pin" />
+                <FooterShortcut keys={["Ctrl", "D"]} label="Delete" />
+                <FooterShortcut keys={["Esc"]} label={activeSubmenu ? "Back" : "Reset"} />
+              </>
             ) : selectedItem?.itemType === "quicklink" ? (
               <>
                 <FooterShortcut keys={["↵"]} label="Open" />
                 <FooterShortcut keys={["Ctrl", "C"]} label="Copy" />
                 <FooterShortcut keys={["Ctrl", "E"]} label="Edit" />
                 <FooterShortcut keys={["Ctrl", "L"]} label="New" />
+                <FooterShortcut keys={["Esc"]} label="Reset" />
+              </>
+            ) : selectedItem?.itemType === "installedApp" ? (
+              <>
+                <FooterShortcut keys={["↵"]} label="Open app" />
+                <FooterShortcut keys={["Ctrl", "C"]} label="Copy path" />
                 <FooterShortcut keys={["Esc"]} label="Reset" />
               </>
             ) : (
@@ -750,6 +964,69 @@ export function CommandBar() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ───────────────── Installed App Detail Panel ───────────────── */
+
+function InstalledAppDetailPanel({
+  item,
+  onOpen,
+  onCopyPath,
+  copied,
+}: {
+  item: CommandItem;
+  onOpen: () => void;
+  onCopyPath: () => void;
+  copied: boolean;
+}) {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-4 px-8 text-center animate-slide-right">
+      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white/[0.04] border border-white/[0.06]">
+        <item.icon className="h-6 w-6 text-white/50" />
+      </div>
+
+      <div className="space-y-1">
+        <p className="text-[13px] font-semibold text-white/90 tracking-tight">{item.label}</p>
+        {item.subtitle && (
+          <p className="text-[11px] text-white/30">
+            {item.subtitle}
+          </p>
+        )}
+      </div>
+
+      {item.launchPath && (
+        <div className="w-full max-w-[280px] rounded-xl bg-white/[0.03] border border-white/[0.05] px-4 py-3 text-left">
+          <p
+            className="text-[11px] text-white/50 break-all leading-relaxed"
+            style={{ fontFamily: "'JetBrains Mono', monospace" }}
+          >
+            {item.launchPath}
+          </p>
+        </div>
+      )}
+
+      <div className="flex items-center gap-1.5 mt-1">
+        <ActionButton
+          onClick={onOpen}
+          icon={<ExternalLink className="h-3 w-3" />}
+          label="Open App"
+        />
+        <ActionButton
+          onClick={onCopyPath}
+          active={copied}
+          icon={copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+          label={copied ? "Copied!" : "Copy Path"}
+          accent={copied}
+        />
+      </div>
+
+      <p className="text-[10px] text-white/20 tracking-wide">
+        <span className="text-white/30">Enter</span> open app
+        <span className="mx-2 text-white/10">|</span>
+        <span className="text-white/30">Ctrl+C</span> copy path
+      </p>
     </div>
   );
 }

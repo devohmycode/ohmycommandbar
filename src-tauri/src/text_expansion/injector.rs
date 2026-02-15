@@ -1,4 +1,6 @@
+use crate::clipboard_history::SUPPRESS_CLIPBOARD_MONITOR;
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 
@@ -14,6 +16,9 @@ pub fn inject_snippet(trigger_len: usize, content: &str) {
         }
     };
 
+    // Suppress clipboard monitor while we manipulate the clipboard
+    SUPPRESS_CLIPBOARD_MONITOR.store(true, Ordering::SeqCst);
+
     // Step 1: Save current clipboard
     let saved_clipboard = get_clipboard_text();
 
@@ -21,6 +26,7 @@ pub fn inject_snippet(trigger_len: usize, content: &str) {
     for _ in 0..trigger_len {
         if let Err(e) = enigo.key(Key::Backspace, Direction::Click) {
             log::error!("Backspace failed: {}", e);
+            SUPPRESS_CLIPBOARD_MONITOR.store(false, Ordering::SeqCst);
             return;
         }
         thread::sleep(Duration::from_millis(5));
@@ -33,6 +39,7 @@ pub fn inject_snippet(trigger_len: usize, content: &str) {
     // Step 4: Paste via Ctrl+V
     if let Err(e) = enigo.key(Key::Control, Direction::Press) {
         log::error!("Ctrl press failed: {}", e);
+        SUPPRESS_CLIPBOARD_MONITOR.store(false, Ordering::SeqCst);
         return;
     }
     if let Err(e) = enigo.key(Key::Unicode('v'), Direction::Click) {
@@ -47,6 +54,10 @@ pub fn inject_snippet(trigger_len: usize, content: &str) {
     if let Some(ref original) = saved_clipboard {
         set_clipboard_text(original);
     }
+
+    // Re-enable clipboard monitor after restoration settles
+    thread::sleep(Duration::from_millis(50));
+    SUPPRESS_CLIPBOARD_MONITOR.store(false, Ordering::SeqCst);
 }
 
 // ---------------------------------------------------------------------------

@@ -3,13 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --port 4200",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:dev": "node scripts/update-tauri-config.js && tauri dev",
+    "tauri:build": "node scripts/update-tauri-config.js && tauri build"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",
