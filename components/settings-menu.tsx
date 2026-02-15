@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { getCurrentWindow, Effect } from '@tauri-apps/api/window'
 import { X, Keyboard, Pin } from 'lucide-react'
 
 // Check if running in Tauri environment (v2 uses __TAURI_INTERNALS__)
@@ -73,7 +73,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
       if (backdropEffect === 'none') {
         getCurrentWindow().clearEffects().catch(() => {})
       } else {
-        getCurrentWindow().setEffects({ effects: [backdropEffect] }).catch(() => {})
+        getCurrentWindow().setEffects({ effects: [backdropEffect as Effect] }).catch(() => {})
       }
     }
     // Toggle class so CSS backdrop-filter is disabled when OS effect is active

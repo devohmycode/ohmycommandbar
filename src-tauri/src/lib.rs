@@ -238,6 +238,64 @@ fn launch_installed_app(app_handle: tauri::AppHandle, path: String) -> Result<()
     open::that(&path).map_err(|e| e.to_string())
 }
 
+// ── System Actions ──────────────────────────────────────────────────────
+
+#[cfg(windows)]
+extern "system" {
+    fn SendMessageW(hwnd: isize, msg: u32, wparam: usize, lparam: isize) -> isize;
+}
+
+#[tauri::command]
+fn system_action(app_handle: tauri::AppHandle, action: String) -> Result<(), String> {
+    if let Some(window) = app_handle.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        match action.as_str() {
+            "lock" => {
+                let _ = std::process::Command::new("rundll32.exe")
+                    .args(["user32.dll,LockWorkStation"])
+                    .spawn();
+            }
+            "sign-out" => {
+                let _ = std::process::Command::new("shutdown")
+                    .args(["/l"])
+                    .spawn();
+            }
+            "shutdown" => {
+                let _ = std::process::Command::new("shutdown")
+                    .args(["/s", "/t", "0"])
+                    .spawn();
+            }
+            "restart" => {
+                let _ = std::process::Command::new("shutdown")
+                    .args(["/r", "/t", "0"])
+                    .spawn();
+            }
+            "sleep" => {
+                let _ = std::process::Command::new("rundll32.exe")
+                    .args(["powrprof.dll,SetSuspendState", "0,1,0"])
+                    .spawn();
+            }
+            "sleep-display" => {
+                #[cfg(windows)]
+                unsafe {
+                    // WM_SYSCOMMAND=0x0112, SC_MONITORPOWER=0xF170, 2=power off
+                    SendMessageW(0xFFFF, 0x0112, 0xF170, 2);
+                }
+            }
+            "empty-recycle-bin" => {
+                let _ = std::process::Command::new("powershell")
+                    .args(["-NoProfile", "-Command", "Clear-RecycleBin -Force -ErrorAction SilentlyContinue"])
+                    .spawn();
+            }
+            _ => {}
+        }
+    });
+    Ok(())
+}
+
 // ── App Entry Point ─────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -255,6 +313,7 @@ pub fn run() {
 
             get_installed_apps,
             launch_installed_app,
+            system_action,
         ])
         .setup(move |app| {
             // Tray icon

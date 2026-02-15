@@ -5,6 +5,7 @@ import {
   Search, ChevronRight, ChevronUp, ChevronDown, FileText, Zap,
   Hash, Copy, Check, Star, Plus, Pencil, Settings, Pin, ClipboardPaste,
   Link, ExternalLink, Clipboard, ArrowLeft,
+  Lock, LogOut, Power, RotateCcw, Moon, Monitor, Trash2,
 } from "lucide-react";
 import { SettingsPanel } from "@/components/settings-menu";
 import { SnippetForm } from "@/components/snippet-form";
@@ -16,7 +17,7 @@ import { useClipboardHistory, type ClipboardEntry } from "@/hooks/use-clipboard-
 import { useInstalledApps, type InstalledApp } from "@/hooks/use-installed-apps";
 import { ClipboardDetailPanel, getClipboardIcon } from "@/components/clipboard-detail-panel";
 import { resolvePlaceholders, previewPlaceholders } from "@/lib/resolve-placeholders";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow, Effect } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -339,7 +340,7 @@ export function CommandBar() {
     if (savedEffect && savedEffect !== "none") {
       document.documentElement.classList.add("os-backdrop-active");
       if (isTauri()) {
-        getCurrentWindow().setEffects({ effects: [savedEffect] }).catch(() => {});
+        getCurrentWindow().setEffects({ effects: [savedEffect as Effect] }).catch(() => {});
       }
     }
   }, []);
@@ -408,17 +409,35 @@ export function CommandBar() {
     keywords: ["clipboard", "history", "paste", "copy"],
   }), [clipboardEntries.length]);
 
+  const runSystemAction = useCallback(async (action: string) => {
+    if (!isTauri()) return;
+    try { await invoke("system_action", { action }); } catch {}
+  }, []);
+
+  const systemItems: CommandItem[] = useMemo(() => [
+    { id: "__sys_lock__", label: "Lock", subtitle: "Lock workstation", icon: Lock, category: "System", keywords: ["lock", "verrouiller", "system"], action: () => runSystemAction("lock") },
+    { id: "__sys_signout__", label: "Sign out", subtitle: "Close Windows session", icon: LogOut, category: "System", keywords: ["sign out", "log out", "déconnecter", "fermer session", "system"], action: () => runSystemAction("sign-out") },
+    { id: "__sys_shutdown__", label: "Shut down", subtitle: "Power off the system", icon: Power, category: "System", keywords: ["shutdown", "arrêter", "éteindre", "power off", "system"], action: () => runSystemAction("shutdown") },
+    { id: "__sys_restart__", label: "Restart", subtitle: "Reboot the system", icon: RotateCcw, category: "System", keywords: ["restart", "reboot", "redémarrer", "system"], action: () => runSystemAction("restart") },
+    { id: "__sys_sleep__", label: "Sleep", subtitle: "Put system to sleep", icon: Moon, category: "System", keywords: ["sleep", "veille", "suspend", "system"], action: () => runSystemAction("sleep") },
+    { id: "__sys_sleep_display__", label: "Sleep display", subtitle: "Turn off the monitor", icon: Monitor, category: "System", keywords: ["sleep display", "monitor", "screen", "écran", "veille écran", "system"], action: () => runSystemAction("sleep-display") },
+    { id: "__sys_empty_recycle_bin__", label: "Empty recycle bin", subtitle: "Delete all items in recycle bin", icon: Trash2, category: "System", keywords: ["recycle bin", "corbeille", "vider", "trash", "empty", "system"], action: () => runSystemAction("empty-recycle-bin") },
+  ], [runSystemAction]);
+
   const items = useMemo(() => {
     if (activeSubmenu === "clipboard") {
       return clipboardItems.map(clipboardEntryToItem);
     }
+    // Only show system items when searching
+    const sysItems = query.trim() ? systemItems : [];
     return [
       ...sortedSnippets.map(snippetToItem),
       ...sortedQuicklinks.map(quicklinkToItem),
       clipboardSubmenuItem,
       ...installedAppItems,
+      ...sysItems,
     ];
-  }, [activeSubmenu, sortedSnippets, sortedQuicklinks, clipboardItems, clipboardSubmenuItem, installedAppItems]);
+  }, [activeSubmenu, sortedSnippets, sortedQuicklinks, clipboardItems, clipboardSubmenuItem, installedAppItems, query, systemItems]);
 
   const filtered = useMemo(() => {
     if (!query.trim()) return items;
@@ -603,6 +622,7 @@ export function CommandBar() {
     Quicklinks: <Link className="h-3 w-3" />,
     Clipboard: <Clipboard className="h-3 w-3" />,
     Applications: <Star className="h-3 w-3" />,
+    System: <Power className="h-3 w-3" />,
     Actions: <Plus className="h-3 w-3" />,
     Scenarios: <Zap className="h-3 w-3" />,
     Policies: <Hash className="h-3 w-3" />,
@@ -851,6 +871,19 @@ export function CommandBar() {
                 </div>
                 <p className="text-[10px] text-white/20 tracking-wide">
                   Press <span className="text-white/30">Enter</span> to browse
+                </p>
+              </div>
+            ) : selectedItem?.id.startsWith("__sys_") ? (
+              <div className="flex h-full flex-col items-center justify-center gap-4 px-8 text-center animate-slide-right">
+                <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white/[0.04] border border-white/[0.06]">
+                  <selectedItem.icon className="h-6 w-6 text-white/50" />
+                </div>
+                <div className="space-y-1">
+                  <p className="text-[13px] font-semibold text-white/90 tracking-tight">{selectedItem.label}</p>
+                  {selectedItem.subtitle && <p className="text-[11px] text-white/30">{selectedItem.subtitle}</p>}
+                </div>
+                <p className="text-[10px] text-white/20 tracking-wide">
+                  Press <span className="text-white/30">Enter</span> to execute
                 </p>
               </div>
             ) : selectedItem?.action ? (
