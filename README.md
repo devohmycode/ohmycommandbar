@@ -1,3 +1,5 @@
+![OhMyCB](https://github.com/devohmycode/ohmycommandbar/blob/master/src-tauri/icons/ohmycb.png)
+
 # OhMyCommandBar
 
 A Raycast-inspired productivity launcher for Windows, built with Tauri 2 + Next.js + React 19.
@@ -6,11 +8,13 @@ Summon a floating command bar with a global shortcut, search your snippets and q
 
 ## Release notes
 
-- 0.1.0 : Initial commit
+-0.1.2 : 
+    - Add search support by Everything 
 - 0.1.1 : 
     - Add Windows system execution commands
     - Add a URL link saving system
     - Add theme options in settings
+- 0.1.0 : Initial commit
 
 ## Features
 
