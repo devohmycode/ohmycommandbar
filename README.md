@@ -8,7 +8,7 @@ Summon a floating command bar with a global shortcut, search your snippets and q
 
 ## Release notes
 
--0.1.2 : 
+- 0.1.2 : 
     - Add search support by Everything 
 - 0.1.1 : 
     - Add Windows system execution commands
